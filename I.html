@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>HapticSync | Ultimate</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <style>
+        :root { --accent: #ff0055; --primary: #00e5ff; --bg: #0a0a0a; --panel: #141414; --text: #eaeaea; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+        
+        body { 
+            background: var(--bg); color: var(--text); 
+            font-family: 'Segoe UI', sans-serif; 
+            margin: 0; height: 100vh; overflow: hidden;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; 
+        }
+
+        /* --- UI CARDS --- */
+        .container { width: 90%; max-width: 420px; text-align: center; z-index: 10; }
+        .card { 
+            background: var(--panel); border: 1px solid #333; 
+            border-radius: 20px; padding: 25px; 
+            box-shadow: 0 10px 40px rgba(0,0,0,0.6); 
+        }
+
+        h1 { color: var(--primary); font-weight: 300; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 20px; }
+        
+        /* --- BUTTONS --- */
+        button { 
+            width: 100%; padding: 16px; border-radius: 12px; border: none; 
+            font-size: 1rem; font-weight: bold; cursor: pointer; margin-bottom: 12px; 
+            transition: transform 0.1s; 
+        }
+        button:active { transform: scale(0.96); }
+        
+        .btn-role { background: #222; color: #aaa; border: 1px solid #444; }
+        .btn-role:hover { border-color: var(--primary); color: white; }
+        
+        .btn-stealth { background: linear-gradient(135deg, #222, #111); border: 1px solid #333; color: var(--primary); }
+        
+        .btn-control { background: #222; color: white; border: 1px solid #444; }
+        .btn-control.active { background: var(--primary); color: black; box-shadow: 0 0 15px var(--primary); border: none; }
+        
+        .btn-stop { 
+            background: var(--accent); color: white; 
+            font-size: 1.2rem; margin-top: 20px; 
+            box-shadow: 0 5px 20px rgba(255, 0, 85, 0.4); 
+        }
+
+        /* --- INPUTS --- */
+        input { 
+            width: 100%; padding: 15px; background: #000; 
+            border: 1px solid #333; color: var(--primary); 
+            font-family: monospace; font-size: 1.4rem; 
+            text-align: center; border-radius: 8px; margin-bottom: 20px; 
+        }
+
+        /* --- STEALTH OVERLAY --- */
+        #stealth-layer {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: black; z-index: 999; display: none;
+            align-items: center; justify-content: center;
+        }
+
+        .hidden { display: none !important; }
+        .status { color: #555; font-size: 0.8rem; margin-top: 10px; }
+        .connected { color: var(--primary); }
+    </style>
+</head>
+<body>
+
+    <div id="screen-login" class="container">
+        <h1>HapticSync</h1>
+        <div class="card">
+            <p style="color:#666; font-size:0.8rem; margin-bottom:20px;">Tap buttons to grant vibration access</p>
+            <button class="btn-role" onclick="init('receiver')">I am the Device (woman)</button>
+            <button class="btn-role" onclick="init('controller')">I am the Controller (man)</button>
+        </div>
+    </div>
+
+    <div id="screen-receiver" class="container hidden">
+        <div class="card">
+            <h2 style="color:white; margin-top:0;">Device Ready</h2>
+            <input type="text" id="my-id" readonly onclick="this.select()">
+            
+            <div id="recv-status" class="status">Waiting for link...</div>
+
+            <hr style="border-color:#222; margin:20px 0;">
+            
+            <button class="btn-stealth" onclick="enableStealth()">
+                ENTER STEALTH MODE
+            </button>
+            <p style="color:#444; font-size:0.7rem;">Screen will go black. Double tap to wake & stop.</p>
+        </div>
+    </div>
+
+    <div id="screen-controller" class="container hidden">
+        <div class="card">
+            <h2 style="color:white; margin-top:0;">Controller</h2>
+            
+            <div id="conn-panel">
+                <input type="text" id="partner-id" placeholder="Partner ID">
+                <button class="btn-role" onclick="connect()">Link Devices</button>
+            </div>
+
+            <div id="ctrl-panel" class="hidden">
+                <div class="status connected" style="margin-bottom:15px;">Target Linked</div>
+                
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                    <button class="btn-control" onclick="send('pulse')">Pulse</button>
+                    <button class="btn-control" onclick="send('wave')">Wave</button>
+                    <button class="btn-control" onclick="send('random')">Random</button>
+                    <button class="btn-control" onclick="send('max')">Max</button>
+                </div>
+
+                <button class="btn-stop" onclick="send('stop')">STOP EVERYTHING</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="stealth-layer"></div>
+
+<script>
+    let peer, conn;
+    let wakeLock = null;
+    let loop = null;
+
+    // --- INITIALIZATION ---
+    async function init(role) {
+        // 1. Unlock Vibration (Silent 1ms vibe)
+        if(navigator.vibrate) navigator.vibrate(1);
+
+        // 2. Request Wake Lock (Keep screen awake)
+        if ('wakeLock' in navigator) {
+            try { wakeLock = await navigator.wakeLock.request('screen'); } 
+            catch (err) { console.log(err); }
+        }
+
+        // 3. Setup Interface
+        document.getElementById('screen-login').classList.add('hidden');
+        
+        // 4. Setup PeerJS
+        const id = Math.floor(1000 + Math.random() * 9000).toString();
+        peer = new Peer(id);
+
+        peer.on('open', (myId) => {
+            if(role === 'receiver') {
+                document.getElementById('screen-receiver').classList.remove('hidden');
+                document.getElementById('my-id').value = myId;
+                setupReceiver();
+            } else {
+                document.getElementById('screen-controller').classList.remove('hidden');
+            }
+        });
+    }
+
+    // --- RECEIVER LOGIC ---
+    function setupReceiver() {
+        peer.on('connection', (c) => {
+            conn = c;
+            const s = document.getElementById('recv-status');
+            s.innerText = "Linked to Controller";
+            s.classList.add('connected');
+
+            conn.on('data', (data) => runVibration(data.cmd));
+            
+            // Safety: If connection drops, STOP.
+            conn.on('close', () => stopAll());
+        });
+    }
+
+    function runVibration(cmd) {
+        // Reset any existing loops
+        if(loop) clearInterval(loop);
+        if(navigator.vibrate) navigator.vibrate(0);
+
+        if(cmd === 'stop') return; // Stop command just clears loops (done above)
+
+        const vibe = (p) => { if(navigator.vibrate) navigator.vibrate(p); };
+
+        if(cmd === 'pulse') {
+            vibe([200, 100]);
+            loop = setInterval(() => vibe([200, 100]), 400);
+        }
+        if(cmd === 'wave') {
+            const p = [50,50, 100,50, 200,50, 400,100];
+            vibe(p);
+            loop = setInterval(() => vibe(p), 1000);
+        }
+        if(cmd === 'random') {
+            loop = setInterval(() => vibe(Math.floor(Math.random() * 400) + 50), 500);
+        }
+        if(cmd === 'max') {
+            // Browsers limit long vibrations, so we loop a short burst
+            loop = setInterval(() => vibe(200), 200);
+        }
+    }
+
+    function stopAll() {
+        if(loop) clearInterval(loop);
+        if(navigator.vibrate) navigator.vibrate(0);
+        
+        // If in stealth mode, exit it
+        document.getElementById('stealth-layer').style.display = 'none';
+        if(document.exitFullscreen) document.exitFullscreen().catch(e=>{});
+    }
+
+    // --- STEALTH LOGIC ---
+    function enableStealth() {
+        const layer = document.getElementById('stealth-layer');
+        layer.style.display = 'flex';
+        // Try fullscreen for total black
+        document.documentElement.requestFullscreen().catch(e=>{});
+    }
+
+    // Double Tap Logic to Wake & Stop
+    let lastTap = 0;
+    document.getElementById('stealth-layer').addEventListener('click', (e) => {
+        const now = new Date().getTime();
+        const diff = now - lastTap;
+        if (diff < 400 && diff > 0) {
+            // Double tap detected
+            stopAll();
+        }
+        lastTap = now;
+    });
+
+    // --- CONTROLLER LOGIC ---
+    function connect() {
+        const target = document.getElementById('partner-id').value;
+        if(!target) return;
+
+        conn = peer.connect(target);
+        conn.on('open', () => {
+            document.getElementById('conn-panel').classList.add('hidden');
+            document.getElementById('ctrl-panel').classList.remove('hidden');
+        });
+    }
+
+    function send(cmd) {
+        // Visual feedback
+        document.querySelectorAll('.btn-control').forEach(b => b.classList.remove('active'));
+        if(event.target && cmd !== 'stop') event.target.classList.add('active');
+
+        if(conn) conn.send({ cmd: cmd });
+    }
+</script>
+</body>
+</html>
